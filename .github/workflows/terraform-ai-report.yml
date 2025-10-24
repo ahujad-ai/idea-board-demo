@@ -1,29 +1,31 @@
-name: Terraform AI Static Code Analysis (No Cloud)
+name: 🤖 Terraform AI Static Code Review (Offline)
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 permissions:
   contents: read
+  pull-requests: write  # ✅ Required to post PR comments
 
 jobs:
-  terraform-ai-static:
+  terraform-ai-review:
     runs-on: ubuntu-latest
 
     steps:
       - name: 🧩 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Terraform & Dependencies
+      - name: ⚙️ Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.7
 
-      - name: 🧰 Install Tools
+      - name: 🧰 Install Dependencies (fast)
         run: |
-          sudo apt-get update && sudo apt-get install -y graphviz jq
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends graphviz jq
           pip install openai fpdf pandas
 
       - name: 🔍 Terraform Static Validation
@@ -32,7 +34,6 @@ jobs:
           terraform init -backend=false -input=false
           terraform validate || true
           terraform graph | dot -Tpng > terraform-graph.png
-          # Collect static resource info without cloud access
           echo "📦 Extracting Terraform resources statically..."
           grep -r "resource \"" . > tfresources.txt || echo "No resources found"
           grep -r "module \"" . > tfmodules.txt || echo "No modules found"
@@ -41,6 +42,7 @@ jobs:
           echo "✅ Static Terraform data extracted"
 
       - name: 🤖 Generate AI Terraform Summary
+        id: ai_summary
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -59,48 +61,55 @@ jobs:
           variables = readfile("terraform/gcp/tfvars.txt")
           providers = readfile("terraform/gcp/tfproviders.txt")
 
-          # --- Summarize resources by type ---
+          # Summarize resources
           res_types = [line.split('"')[1] for line in resources.splitlines() if '"' in line]
-          df = pd.DataFrame(res_types, columns=["Type"])
-          summary_table = df.value_counts().reset_index(name="Count").to_string(index=False) if not df.empty else "No resources detected"
+          if res_types:
+              df = pd.DataFrame(res_types, columns=["Type"])
+              summary_table = df.value_counts().reset_index(name="Count").to_string(index=False)
+          else:
+              summary_table = "No resources detected"
 
-          # --- AI prompt ---
           prompt = f"""
-          You are analyzing Terraform code statically (no cloud plan or provider init).
-          Summarize this configuration in plain English.
-
-          Focus on:
-          1. Key infrastructure components (GKE, SQL, VPC, IAM, etc.)
-          2. Resource dependencies and architecture overview.
-          3. Security/scalability aspects.
-          4. Potential cost drivers.
-          5. Suggestions for improvement.
+          You are an AI DevOps reviewer. Analyze this Terraform code statically (no cloud calls).
+          Create a short, insightful review covering:
+          1. Key infrastructure components
+          2. Resource dependencies & architecture overview
+          3. Security & scalability considerations
+          4. Cost or design optimizations
+          5. Overall feedback summary (in 3–4 bullet points)
 
           Variables:
           {variables[:2000]}
-
           Providers:
           {providers[:2000]}
-
           Modules:
           {modules[:2000]}
-
           Resource Summary:
           {summary_table}
           """
 
-          print("🧠 Sending AI analysis request...")
+          print("🧠 Requesting AI analysis...")
           response = client.chat.completions.create(
               model="gpt-4o-mini",
               messages=[{"role": "user", "content": prompt}]
           )
           ai_summary = response.choices[0].message.content.strip()
 
-          # --- Generate PDF ---
+          # Save Markdown report
+          with open("terraform-ai-summary.md", "w") as f:
+              f.write("# 🤖 Terraform AI Code Review\n\n")
+              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
+              f.write("## 🧠 AI Review\n\n" + ai_summary)
+
+          # Write to GitHub output for PR comment
+          with open(os.environ["GITHUB_OUTPUT"], "a") as ghout:
+              ghout.write(f"summary<<EOF\n{ai_summary}\nEOF\n")
+
+          # PDF export
           pdf = FPDF()
           pdf.add_page()
           pdf.set_font("Arial", "B", 16)
-          pdf.cell(200, 10, "Terraform Static Infrastructure Report", ln=True, align="C")
+          pdf.cell(200, 10, "Terraform Static Review", ln=True, align="C")
 
           pdf.set_font("Arial", "B", 12)
           pdf.cell(200, 10, "Resource Summary", ln=True)
@@ -108,26 +117,30 @@ jobs:
           pdf.multi_cell(0, 6, summary_table)
 
           pdf.set_font("Arial", "B", 12)
-          pdf.cell(200, 10, "AI Architecture Overview", ln=True)
+          pdf.cell(200, 10, "AI Review Summary", ln=True)
           pdf.set_font("Arial", "", 11)
           pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
 
-          pdf.output("terraform-static-report.pdf")
-
-          # --- Markdown Summary ---
-          with open("terraform-ai-summary.md", "w") as f:
-              f.write("# 🧩 Terraform Static Analysis Report\n\n")
-              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
-              f.write("## 🤖 AI Analysis\n\n" + ai_summary)
-
-          print("✅ Terraform AI static report generated successfully.")
+          pdf.output("terraform-static-review.pdf")
           EOF
 
-      - name: 📦 Upload AI Report
+      - name: 🗨️ Post AI Review Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "🤖 Terraform AI Code Review"
+          message: |
+            ## 🤖 AI Terraform Review Summary
+
+            ${{ steps.ai_summary.outputs.summary }}
+
+            📄 *Full PDF report and graph are available as build artifacts.*
+
+      - name: 📦 Upload AI Reports
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-static-report
+          name: terraform-ai-review-report
           path: |
             terraform/gcp/terraform-graph.png
             terraform-ai-summary.md
-            terraform-static-report.pdf
+            terraform-static-review.pdf
