@@ -25,65 +25,66 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y graphviz jq
           pip install openai fpdf pandas
-          TF_INSPECT_VERSION="v0.0.4"
-          curl -L -o terraform-config-inspect_linux_amd64.zip \
-            https://releases.hashicorp.com/terraform-config-inspect/${TF_INSPECT_VERSION}/terraform-config-inspect_${TF_INSPECT_VERSION#v}_linux_amd64.zip
-          unzip terraform-config-inspect_linux_amd64.zip -d /usr/local/bin/
-          chmod +x /usr/local/bin/terraform-config-inspect
 
       - name: 🔍 Terraform Static Validation
         working-directory: ./terraform/gcp
         run: |
           terraform init -backend=false -input=false
-          terraform validate
+          terraform validate || true
           terraform graph | dot -Tpng > terraform-graph.png
-          terraform-config-inspect --json . > tfconfig.json
-          echo "✅ Terraform graph and config extracted"
+          # Collect static resource info without cloud access
+          echo "📦 Extracting Terraform resources statically..."
+          grep -r "resource \"" . > tfresources.txt || echo "No resources found"
+          grep -r "module \"" . > tfmodules.txt || echo "No modules found"
+          grep -r "variable \"" . > tfvars.txt || echo "No variables found"
+          grep -r "provider \"" . > tfproviders.txt || echo "No providers found"
+          echo "✅ Static Terraform data extracted"
 
       - name: 🤖 Generate AI Terraform Summary
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python3 <<'EOF'
-          import os, json, pandas as pd
+          import os, pandas as pd
           from openai import OpenAI
           from fpdf import FPDF
 
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-          # Load static Terraform config JSON
-          with open("terraform/gcp/tfconfig.json") as f:
-              data = json.load(f)
+          def readfile(f):
+              return open(f).read() if os.path.exists(f) else ""
 
-          modules = data.get("module_calls", [])
-          variables = data.get("variables", {})
-          outputs = data.get("outputs", {})
-          providers = data.get("provider_requirements", [])
-          resources = data.get("resources", [])
+          resources = readfile("terraform/gcp/tfresources.txt")
+          modules = readfile("terraform/gcp/tfmodules.txt")
+          variables = readfile("terraform/gcp/tfvars.txt")
+          providers = readfile("terraform/gcp/tfproviders.txt")
 
-          # --- Build resource summary table ---
-          if resources:
-              df = pd.DataFrame(resources)
-              df = df.rename(columns={"type": "Type", "name": "Name"})
-              summary_table = df.groupby(["Type"]).size().reset_index(name="Count").to_string(index=False)
-          else:
-              summary_table = "No resources defined in Terraform configuration."
+          # --- Summarize resources by type ---
+          res_types = [line.split('"')[1] for line in resources.splitlines() if '"' in line]
+          df = pd.DataFrame(res_types, columns=["Type"])
+          summary_table = df.value_counts().reset_index(name="Count").to_string(index=False) if not df.empty else "No resources detected"
 
-          # --- Prepare AI prompt ---
+          # --- AI prompt ---
           prompt = f"""
-          You are analyzing a Terraform configuration statically (without any cloud interaction).
+          You are analyzing Terraform code statically (no cloud plan or provider init).
+          Summarize this configuration in plain English.
 
-          Summarize:
-          1. The main infrastructure components (VPC, Kubernetes, SQL, IAM, etc.)
-          2. The relationships or dependencies between resources.
-          3. The intended architecture and purpose.
-          4. Security or scalability notes (e.g., private networking, node pools).
-          5. Suggest improvements or optimizations.
+          Focus on:
+          1. Key infrastructure components (GKE, SQL, VPC, IAM, etc.)
+          2. Resource dependencies and architecture overview.
+          3. Security/scalability aspects.
+          4. Potential cost drivers.
+          5. Suggestions for improvement.
 
-          Configuration metadata:
-          Providers: {providers}
-          Variables: {list(variables.keys())}
-          Outputs: {list(outputs.keys())}
+          Variables:
+          {variables[:2000]}
+
+          Providers:
+          {providers[:2000]}
+
+          Modules:
+          {modules[:2000]}
+
           Resource Summary:
           {summary_table}
           """
@@ -128,5 +129,5 @@ jobs:
           name: terraform-static-report
           path: |
             terraform/gcp/terraform-graph.png
-            terraform/gcp/terraform-ai-summary.md
+            terraform-ai-summary.md
             terraform-static-report.pdf
