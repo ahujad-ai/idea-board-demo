@@ -1,4 +1,4 @@
-name: Terraform AI Graph & Summary (Offline Mode)
+name: Terraform AI Static Code Analysis (No Cloud)
 
 on:
   push:
@@ -9,38 +9,35 @@ permissions:
   contents: read
 
 jobs:
-  terraform-ai-graph:
+  terraform-ai-static:
     runs-on: ubuntu-latest
 
     steps:
       - name: 🧩 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Terraform
+      - name: ⚙️ Setup Terraform & Dependencies
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.7
 
-      - name: 🧰 Install Dependencies
+      - name: 🧰 Install Tools
         run: |
-          sudo apt-get update && sudo apt-get install -y graphviz
-          pip install openai fpdf matplotlib pandas
+          sudo apt-get update && sudo apt-get install -y graphviz jq
+          pip install openai fpdf pandas
+          curl -LO https://github.com/hashicorp/terraform-config-inspect/releases/latest/download/terraform-config-inspect_$(uname -s | tr '[:upper:]' '[:lower:]')_amd64.zip
+          unzip terraform-config-inspect_*.zip -d /usr/local/bin/
 
-      - name: 🧱 Terraform Offline Init & Plan
+      - name: 🔍 Terraform Static Validation
         working-directory: ./terraform/gcp
         run: |
-          echo '{}' > $HOME/fake_gcp_creds.json
-          export GOOGLE_APPLICATION_CREDENTIALS=$HOME/fake_gcp_creds.json
           terraform init -backend=false -input=false
           terraform validate
-          terraform plan -no-color -refresh=false -lock=false \
-            -var="project_id=dummy" -var="db_password=dummy" \
-            -out=tfplan || true
-          terraform show -json tfplan > tfplan.json
-          terraform show -no-color tfplan > tfplan.txt
           terraform graph | dot -Tpng > terraform-graph.png
+          terraform-config-inspect --json . > tfconfig.json
+          echo "✅ Terraform graph and config extracted"
 
-      - name: 🤖 Generate AI Terraform Report
+      - name: 🤖 Generate AI Terraform Summary
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -51,89 +48,82 @@ jobs:
 
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-          # --- Load Terraform JSON plan ---
-          with open("terraform/gcp/tfplan.json") as f:
-              plan_data = json.load(f)
+          # Load static Terraform config JSON
+          with open("terraform/gcp/tfconfig.json") as f:
+              data = json.load(f)
 
-          # --- Recursively extract resources ---
-          def extract_resources(module):
-              resources = []
-              if "resources" in module:
-                  for res in module["resources"]:
-                      resources.append({
-                          "Type": res.get("type", "unknown"),
-                          "Name": res.get("name", "unknown"),
-                          "Provider": res.get("provider_name", "unknown"),
-                      })
-              for child in module.get("child_modules", []):
-                  resources.extend(extract_resources(child))
-              return resources
+          modules = data.get("module_calls", [])
+          variables = data.get("variables", {})
+          outputs = data.get("outputs", {})
+          providers = data.get("provider_requirements", [])
+          resources = data.get("resources", [])
 
-          root_module = plan_data.get("planned_values", {}).get("root_module", {})
-          resources = extract_resources(root_module)
-
-          # --- Create summary table ---
+          # --- Build resource summary table ---
           if resources:
               df = pd.DataFrame(resources)
-              summary_table = df.groupby(["Type", "Provider"], dropna=False)\
-                                .size().reset_index(name="Count")\
-                                .to_string(index=False)
+              df = df.rename(columns={"type": "Type", "name": "Name"})
+              summary_table = df.groupby(["Type"]).size().reset_index(name="Count").to_string(index=False)
           else:
-              summary_table = "No resources detected (offline or empty plan)."
+              summary_table = "No resources defined in Terraform configuration."
 
-          # --- Prepare AI summary ---
-          plan_text = open("terraform/gcp/tfplan.txt").read()[:12000]
+          # --- Prepare AI prompt ---
           prompt = f"""
-          Analyze this Terraform plan and summarize:
-          1. Key resource types and their purpose
-          2. Dependencies and architecture overview
-          3. Likely cost drivers (compute, storage, networking)
-          4. Security considerations (public exposure, IAM)
-          5. Deployment complexity rating (Low/Medium/High)
-          -----
-          {plan_text}
+          You are analyzing a Terraform configuration statically (without any cloud interaction).
+
+          Summarize:
+          1. The main infrastructure components (VPC, Kubernetes, SQL, IAM, etc.)
+          2. The relationships or dependencies between resources.
+          3. The intended architecture and purpose.
+          4. Security or scalability notes (e.g., private networking, node pools).
+          5. Suggest improvements or optimizations.
+
+          Configuration metadata:
+          Providers: {providers}
+          Variables: {list(variables.keys())}
+          Outputs: {list(outputs.keys())}
+          Resource Summary:
+          {summary_table}
           """
 
-          print("🧠 Sending summary request to OpenAI...")
+          print("🧠 Sending AI analysis request...")
           response = client.chat.completions.create(
               model="gpt-4o-mini",
               messages=[{"role": "user", "content": prompt}]
           )
-
           ai_summary = response.choices[0].message.content.strip()
 
           # --- Generate PDF ---
           pdf = FPDF()
           pdf.add_page()
           pdf.set_font("Arial", "B", 16)
-          pdf.cell(200, 10, "Terraform AI Infrastructure Report", ln=True, align="C")
+          pdf.cell(200, 10, "Terraform Static Infrastructure Report", ln=True, align="C")
 
           pdf.set_font("Arial", "B", 12)
-          pdf.cell(200, 10, "Resource Summary Table", ln=True)
+          pdf.cell(200, 10, "Resource Summary", ln=True)
           pdf.set_font("Courier", "", 10)
           pdf.multi_cell(0, 6, summary_table)
 
           pdf.set_font("Arial", "B", 12)
-          pdf.cell(200, 10, "AI-Generated Summary", ln=True)
+          pdf.cell(200, 10, "AI Architecture Overview", ln=True)
           pdf.set_font("Arial", "", 11)
           pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
 
-          pdf.output("terraform-ai-report.pdf")
+          pdf.output("terraform-static-report.pdf")
 
-          # --- Markdown output for PR comments ---
+          # --- Markdown Summary ---
           with open("terraform-ai-summary.md", "w") as f:
-              f.write("# 🧩 Terraform AI Summary Report\n\n")
-              f.write("## 📊 Resource Table\n```\n" + summary_table + "\n```\n\n")
-              f.write("## 🤖 AI-Generated Analysis\n\n" + ai_summary)
+              f.write("# 🧩 Terraform Static Analysis Report\n\n")
+              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
+              f.write("## 🤖 AI Analysis\n\n" + ai_summary)
 
-          print("✅ Terraform AI analysis completed successfully.")
+          print("✅ Terraform AI static report generated successfully.")
           EOF
 
-      - name: 📦 Upload Artifacts
+      - name: 📦 Upload AI Report
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-ai-report
+          name: terraform-static-report
           path: |
             terraform/gcp/terraform-graph.png
             terraform/gcp/terraform-ai-summary.md
-            terraform-ai-report.pdf
+            terraform-static-report.pdf
