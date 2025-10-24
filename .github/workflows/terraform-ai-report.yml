@@ -1,4 +1,4 @@
-name: Terraform AI Graph & Summary
+name: Terraform AI Graph & Summary (Offline Mode)
 
 on:
   push:
@@ -13,20 +13,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: 🧩 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set Up Terraform
+      - name: ⚙️ Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: 1.5.7
 
-      - name: Install Graphviz & Python deps
+      - name: 🧰 Install Dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y graphviz
           pip install openai fpdf matplotlib pandas
 
-      - name: Terraform Offline Init & Plan
+      - name: 🧱 Terraform Offline Init & Plan
         working-directory: ./terraform/gcp
         run: |
           echo '{}' > $HOME/fake_gcp_creds.json
@@ -40,7 +40,7 @@ jobs:
           terraform show -no-color tfplan > tfplan.txt
           terraform graph | dot -Tpng > terraform-graph.png
 
-      - name: Generate AI Terraform Summary
+      - name: 🤖 Generate AI Terraform Report
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
@@ -49,42 +49,52 @@ jobs:
           from openai import OpenAI
           from fpdf import FPDF
 
-          # Initialize client
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-          # Load Terraform plan JSON
-          plan_file = "terraform/gcp/tfplan.json"
-          with open(plan_file) as f:
+          # --- Load Terraform JSON plan ---
+          with open("terraform/gcp/tfplan.json") as f:
               plan_data = json.load(f)
 
-          # Extract resource summary table
-          resources = []
-          for res in plan_data.get("planned_values", {}).get("root_module", {}).get("resources", []):
-              resources.append({
-                  "Type": res.get("type"),
-                  "Name": res.get("name"),
-                  "Provider": res.get("provider_name"),
-              })
+          # --- Recursively extract resources ---
+          def extract_resources(module):
+              resources = []
+              if "resources" in module:
+                  for res in module["resources"]:
+                      resources.append({
+                          "Type": res.get("type", "unknown"),
+                          "Name": res.get("name", "unknown"),
+                          "Provider": res.get("provider_name", "unknown"),
+                      })
+              for child in module.get("child_modules", []):
+                  resources.extend(extract_resources(child))
+              return resources
 
-          df = pd.DataFrame(resources)
-          summary_table = df.groupby(["Type", "Provider"]).size().reset_index(name="Count").to_string(index=False)
+          root_module = plan_data.get("planned_values", {}).get("root_module", {})
+          resources = extract_resources(root_module)
 
-          # AI prompt
-          with open("terraform/gcp/tfplan.txt") as f:
-              plan_text = f.read()
+          # --- Create summary table ---
+          if resources:
+              df = pd.DataFrame(resources)
+              summary_table = df.groupby(["Type", "Provider"], dropna=False)\
+                                .size().reset_index(name="Count")\
+                                .to_string(index=False)
+          else:
+              summary_table = "No resources detected (offline or empty plan)."
 
+          # --- Prepare AI summary ---
+          plan_text = open("terraform/gcp/tfplan.txt").read()[:12000]
           prompt = f"""
           Analyze this Terraform plan and summarize:
-          - Key infrastructure components (VPC, GKE, CloudSQL, etc.)
-          - Resource dependencies and purpose
-          - Cost drivers (compute, network, database)
-          - Security or exposure risks
-          - Deployment complexity rating (Low/Medium/High)
+          1. Key resource types and their purpose
+          2. Dependencies and architecture overview
+          3. Likely cost drivers (compute, storage, networking)
+          4. Security considerations (public exposure, IAM)
+          5. Deployment complexity rating (Low/Medium/High)
           -----
-          {plan_text[:10000]}
+          {plan_text}
           """
 
-          print("🧠 Asking AI for architecture summary...")
+          print("🧠 Sending summary request to OpenAI...")
           response = client.chat.completions.create(
               model="gpt-4o-mini",
               messages=[{"role": "user", "content": prompt}]
@@ -92,11 +102,11 @@ jobs:
 
           ai_summary = response.choices[0].message.content.strip()
 
-          # Create PDF report
+          # --- Generate PDF ---
           pdf = FPDF()
           pdf.add_page()
           pdf.set_font("Arial", "B", 16)
-          pdf.cell(200, 10, "Terraform Infrastructure Report", ln=True, align="C")
+          pdf.cell(200, 10, "Terraform AI Infrastructure Report", ln=True, align="C")
 
           pdf.set_font("Arial", "B", 12)
           pdf.cell(200, 10, "Resource Summary Table", ln=True)
@@ -109,20 +119,21 @@ jobs:
           pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
 
           pdf.output("terraform-ai-report.pdf")
-          print("✅ Report generated successfully.")
 
-          # Save Markdown summary for PR comments
+          # --- Markdown output for PR comments ---
           with open("terraform-ai-summary.md", "w") as f:
-              f.write("# 🧩 Terraform Summary Report\n\n")
+              f.write("# 🧩 Terraform AI Summary Report\n\n")
               f.write("## 📊 Resource Table\n```\n" + summary_table + "\n```\n\n")
-              f.write("## 🧠 AI-Generated Analysis\n\n" + ai_summary)
+              f.write("## 🤖 AI-Generated Analysis\n\n" + ai_summary)
+
+          print("✅ Terraform AI analysis completed successfully.")
           EOF
 
-      - name: Upload Artifacts
+      - name: 📦 Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-ai-output
+          name: terraform-ai-report
           path: |
             terraform/gcp/terraform-graph.png
-            terraform/gcp/terraform-ai-report.pdf
             terraform/gcp/terraform-ai-summary.md
+            terraform-ai-report.pdf
