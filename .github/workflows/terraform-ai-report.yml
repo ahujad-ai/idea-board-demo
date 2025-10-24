@@ -22,68 +22,56 @@ jobs:
         with:
           terraform_version: 1.8.5
 
-      - name: Terraform Init & Plan
-        working-directory: ./terraform/gcp
-        run: |
-          terraform init -input=false
-          terraform plan -no-color -out=tfplan
-          terraform show -no-color -json tfplan > tfplan.json
-          terraform show -no-color tfplan > tfplan.txt
-
-      - name: Install Python dependencies
-        run: |
-          python3 -m venv venv
-          . venv/bin/activate
-          pip install openai fpdf
-
-      - name: Generate AI Summary PDF
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-        run: |
-          . venv/bin/activate
-          python3 <<'EOF'
-          import os, json
-          from openai import OpenAI
-          from fpdf import FPDF
-
-          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-          with open("terraform/tfplan.txt") as f:
-              plan_text = f.read()
-
-          prompt = f"""
-          You are an infrastructure assistant.
-          Analyze the following Terraform plan and generate a concise summary:
-          - List all resources by type and name.
-          - Explain dependencies and relationships.
-          - Mention regions, instance sizes, networking, storage, databases, etc.
-          - Highlight any potential risks or cost drivers.
-          ---
-          {plan_text[:15000]}
-          """
-
-          response = client.chat.completions.create(
-              model="gpt-5",
-              messages=[{"role": "user", "content": prompt}],
-              temperature=0.3,
-          )
-
-          summary = response.choices[0].message.content.strip()
-
-          pdf = FPDF()
-          pdf.add_page()
-          pdf.set_font("Arial", "B", 14)
-          pdf.cell(200, 10, "Terraform Resource Summary", ln=True, align="C")
-          pdf.set_font("Arial", "", 12)
-          for line in summary.split("\n"):
-              pdf.multi_cell(0, 10, line)
-          pdf.output("terraform-summary.pdf")
-
-          print("✅ Generated terraform-summary.pdf")
-          EOF
-
-      - name: Upload AI Summary PDF
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-summary
-          path: terraform-summary.pdf
+        - name: Terraform Dry-Run (Offline Analysis)
+            working-directory: ./terraform/gcp
+            run: |
+              terraform init -backend=false -input=falses 
+              terraform validate
+              terraform plan -no-color -refresh=false -lock=false \
+                -var="db_password=dummy" -var="project_id=test" \
+                -out=tfplan || true
+              terraform show -no-color tfplan > tfplan.txt
+        
+        - name: Generate AI Terraform Report
+          env:
+            OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          run: |
+            python3 <<'EOF'
+            from openai import OpenAI
+            from fpdf import FPDF
+            import os
+        
+            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+            plan = open("terraform/gcp/tfplan.txt").read()
+        
+            prompt = f"""
+            Analyze this Terraform configuration (dry-run output) and generate a report:
+            - List resource types (VPC, GKE, CloudSQL, IAM, etc.)
+            - Identify dependencies between modules
+            - Summarize estimated cost drivers
+            - Flag risky operations (e.g., destroy, public access)
+            ---
+            {plan[:15000]}
+            """
+        
+            response = client.chat.completions.create(
+                model="gpt-5",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+            )
+            summary = response.choices[0].message.content.strip()
+        
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(200, 10, "Terraform Static Analysis Report", ln=True, align="C")
+            pdf.set_font("Arial", "", 12)
+            pdf.multi_cell(0, 10, summary)
+            pdf.output("terraform-static-report.pdf")
+            EOF
+        
+        - name: Upload AI Report
+          uses: actions/upload-artifact@v4
+          with:
+            name: terraform-static-report
+            path: terraform-static-report.pdf
