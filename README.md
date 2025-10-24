@@ -183,7 +183,7 @@ idea-board-demo/
 ## 🔮 Future Enhancements
 * 🤖 Natural-language `/deploy-preview` commands in PRs  
 * 🧩 AI-driven autoscaling policy suggestions  
-* ☁️ Add Azure (AKS) support  
+* ☁️ Add Azure (AKS) and AWS support  
 * 📈 Automatic cost forecast and impact analysis  
 
 ---
@@ -193,8 +193,6 @@ idea-board-demo/
 Created for the  
 **“AI-First Cloud-Agnostic DevOps Platform” Case Study Challenge**
 
-Built by **[Your Name]**  
-using ⚛️ React, 🐍 FastAPI, ☁️ Terraform, ☸️ Kubernetes, and 🤖 OpenAI API.
 
 ---
 

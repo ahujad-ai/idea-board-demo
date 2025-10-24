@@ -3,3 +3,4 @@
 *.tfstate.*
 terraform.tfvars
 *.json
+.DS_Store

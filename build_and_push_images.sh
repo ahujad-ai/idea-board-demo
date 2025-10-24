@@ -5,9 +5,27 @@ if [ -z "$1" ]; then
   exit 1
 fi
 CLOUD=$1
-IDENT=$2
-docker build -t idea-backend:latest ./backend
-docker build -t idea-frontend:latest ./frontend
+IDENT=$3
+API_IP=$2
+
+if [ -z "$API_IP" ]; then
+  read -p "Enter Backend API IP (e.g., 35.244.29.171): " API_IP
+fi
+
+echo "🚀 Building backend image..."
+docker buildx build \
+  --platform linux/amd64 \
+  -t asia-south1-docker.pkg.dev/outmarket-ai-demo/idea-board/idea-backend:latest \
+  ./backend --push
+
+# Build frontend
+echo "🚀 Building frontend image with API URL: http://$API_IP:8000"
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  -t asia-south1-docker.pkg.dev/outmarket-ai-demo/idea-board/idea-frontend:latest \
+  --build-arg VITE_API_URL=http://$API_IP:8000 \
+  ./frontend --push
+
 if [ "$CLOUD" == "gcp" ]; then
   if [ -z "$IDENT" ]; then
     PROJECT_ID=$(gcloud config get-value project)
