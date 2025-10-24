@@ -9,6 +9,9 @@ permissions:
   contents: read
   id-token: write
 
+env:
+  CLOUD_PROVIDER: gcp  # or aws
+
 jobs:
   terraform-ai-report:
     runs-on: ubuntu-latest
@@ -23,7 +26,7 @@ jobs:
           terraform_version: 1.8.5
 
       - name: Terraform Dry-Run (Offline Analysis)
-        working-directory: ./terraform/gcp
+        working-directory: ./terraform/${{ env.CLOUD_PROVIDER }}
         run: |
           terraform init -backend=false -input=false
           terraform validate
@@ -32,67 +35,67 @@ jobs:
             -out=tfplan || true
           terraform show -no-color tfplan > tfplan.txt
 
-          - name: Setup Python + Dependencies
-          run: |
-            python3 -m venv venv
-            . venv/bin/activate
-            pip install openai fpdf2
-  
-        - name: Generate AI Terraform Report
-          env:
-            OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          run: |
-            . venv/bin/activate
-            python3 <<'EOF'
-            import os, time
-            from openai import OpenAI
-            from fpdf import FPDF
-  
-            client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-            plan_path = "terraform/${{ env.CLOUD_PROVIDER }}/tfplan.txt"
-            with open(plan_path, "r") as f:
-                plan = f.read()
-  
-            prompt = f"""
-            You are a Terraform and Cloud expert.
-            Analyze this Terraform plan and summarize:
-            - Key resources (e.g., GKE, CloudSQL, VPC, IAM)
-            - Relationships/dependencies between modules
-            - Cost or risk implications
-            - Any destroy or risky actions
-            ---
-            {plan[:15000]}
-            """
-  
-            # Robust call with retry and fallback
-            response = None
-            for attempt in range(3):
-                try:
-                    response = client.chat.completions.create(
-                        model="gpt-4o-mini",
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    break
-                except Exception as e:
-                    print(f"⚠️ Attempt {attempt+1} failed: {e}")
-                    time.sleep(10)
-            if not response:
-                raise SystemExit("❌ OpenAI API failed after 3 retries")
-  
-            summary = response.choices[0].message.content.strip()
-  
-            pdf = FPDF()
-            pdf.add_page()
-            pdf.set_font("Helvetica", "B", 16)
-            pdf.cell(200, 10, "Terraform Static Analysis Report", ln=True, align="C")
-            pdf.set_font("Helvetica", "", 12)
-            pdf.multi_cell(0, 10, summary.encode('latin-1', 'replace').decode('latin-1'))
-            pdf.output("terraform-static-report.pdf")
-            print("✅ AI Terraform Report generated successfully.")
-            EOF
-  
-        - name: Upload AI Report
-          uses: actions/upload-artifact@v4
-          with:
-            name: terraform-static-report
-            path: terraform-static-report.pdf
+      - name: Setup Python + Dependencies
+        run: |
+          python3 -m venv venv
+          . venv/bin/activate
+          pip install openai fpdf2
+
+      - name: Generate AI Terraform Report
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          . venv/bin/activate
+          python3 <<'EOF'
+          import os, time
+          from openai import OpenAI
+          from fpdf import FPDF
+
+          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+          plan_path = "terraform/${{ env.CLOUD_PROVIDER }}/tfplan.txt"
+          with open(plan_path, "r") as f:
+              plan = f.read()
+
+          prompt = f"""
+          You are a Terraform and Cloud expert.
+          Analyze this Terraform plan and summarize:
+          - Key resources (e.g., GKE, CloudSQL, VPC, IAM)
+          - Relationships/dependencies between modules
+          - Cost or risk implications
+          - Any destroy or risky actions
+          ---
+          {plan[:15000]}
+          """
+
+          # Robust call with retry and fallback
+          response = None
+          for attempt in range(3):
+              try:
+                  response = client.chat.completions.create(
+                      model="gpt-4o-mini",
+                      messages=[{"role": "user", "content": prompt}],
+                  )
+                  break
+              except Exception as e:
+                  print(f"⚠️ Attempt {attempt+1} failed: {e}")
+                  time.sleep(10)
+          if not response:
+              raise SystemExit("❌ OpenAI API failed after 3 retries")
+
+          summary = response.choices[0].message.content.strip()
+
+          pdf = FPDF()
+          pdf.add_page()
+          pdf.set_font("Helvetica", "B", 16)
+          pdf.cell(200, 10, "Terraform Static Analysis Report", ln=True, align="C")
+          pdf.set_font("Helvetica", "", 12)
+          pdf.multi_cell(0, 10, summary.encode('latin-1', 'replace').decode('latin-1'))
+          pdf.output("terraform-static-report.pdf")
+          print("✅ AI Terraform Report generated successfully.")
+          EOF
+
+      - name: Upload AI Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-static-report
+          path: terraform-static-report.pdf
