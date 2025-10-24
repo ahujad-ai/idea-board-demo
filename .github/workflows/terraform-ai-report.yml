@@ -25,8 +25,11 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y graphviz jq
           pip install openai fpdf pandas
-          curl -LO https://github.com/hashicorp/terraform-config-inspect/releases/latest/download/terraform-config-inspect_$(uname -s | tr '[:upper:]' '[:lower:]')_amd64.zip
-          unzip terraform-config-inspect_*.zip -d /usr/local/bin/
+          TF_INSPECT_VERSION="v0.0.4"
+          curl -L -o terraform-config-inspect_linux_amd64.zip \
+            https://releases.hashicorp.com/terraform-config-inspect/${TF_INSPECT_VERSION}/terraform-config-inspect_${TF_INSPECT_VERSION#v}_linux_amd64.zip
+          unzip terraform-config-inspect_linux_amd64.zip -d /usr/local/bin/
+          chmod +x /usr/local/bin/terraform-config-inspect
 
       - name: 🔍 Terraform Static Validation
         working-directory: ./terraform/gcp
