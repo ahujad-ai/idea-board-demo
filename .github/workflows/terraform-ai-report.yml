@@ -1,4 +1,4 @@
-name: Terraform AI Offline Analysis
+name: Terraform AI Report
 
 on:
   push:
@@ -7,82 +7,108 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
-  terraform-ai-analysis:
+  terraform-ai-report:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set Up Terraform
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
-          terraform_version: 1.5.7
+          terraform_version: 1.8.5
 
-      - name: Create Fake GCP Credentials
-        run: |
-          echo '{}' > /tmp/fake_gcp_creds.json
-          export GOOGLE_APPLICATION_CREDENTIALS=/tmp/fake_gcp_creds.json
-
-      - name: Initialize Terraform (Offline)
+      - name: Terraform Dry-Run (Offline Analysis)
         working-directory: ./terraform/gcp
         run: |
           terraform init -backend=false -input=false
           terraform validate
-
-      - name: Static Terraform Plan (No Cloud Calls)
-        working-directory: ./terraform/gcp
-        run: |
           terraform plan -no-color -refresh=false -lock=false \
-            -var="project_id=dummy" -var="db_password=dummy" \
+            -var="db_password=dummy" -var="project_id=test" \
             -out=tfplan || true
           terraform show -no-color tfplan > tfplan.txt
 
+      - name: Setup Python + Dependencies
+        run: |
+          python3 -m venv venv
+          . venv/bin/activate
+          pip install openai fpdf2
+
+      - name: Terraform Dry-Run (Offline Analysis)
+        working-directory: ./terraform/gcp
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform plan -no-color -refresh=false -lock=false \
+            -var="db_password=dummy" -var="project_id=test" \
+            -out=tfplan || true
+          terraform show -no-color tfplan > tfplan.txt
+
+          - name: Setup Python + Dependencies
+          run: |
+            python3 -m venv venv
+            . venv/bin/activate
+            pip install openai fpdf2
+  
       - name: Generate AI Terraform Report
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
+          . venv/bin/activate
           python3 <<'EOF'
-          import os
+          import os, time
           from openai import OpenAI
           from fpdf import FPDF
 
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-          plan_text = open("terraform/gcp/tfplan.txt").read()
+          plan_path = "terraform/${{ env.CLOUD_PROVIDER }}/tfplan.txt"
+          with open(plan_path, "r") as f:
+              plan = f.read()
 
           prompt = f"""
-          Analyze this Terraform plan text and summarize:
-          1. List all resource types (e.g., GKE cluster, CloudSQL, VPC)
-          2. Explain relationships between resources (dependencies)
-          3. Mention potential cost drivers (compute, storage)
-          4. Identify risky configurations (like public IPs)
-          5. Generate a readable architecture overview
-          -----
-          {plan_text[:12000]}
+          You are a Terraform and Cloud expert.
+          Analyze this Terraform plan and summarize:
+          - Key resources (e.g., GKE, CloudSQL, VPC, IAM)
+          - Relationships/dependencies between modules
+          - Cost or risk implications
+          - Any destroy or risky actions
+          ---
+          {plan[:15000]}
           """
 
-          print("🧠 Sending to LLM for analysis...")
-          response = client.chat.completions.create(
-              model="gpt-4o-mini",
-              messages=[{"role": "user", "content": prompt}]
-          )
+          # Robust call with retry and fallback
+          response = None
+          for attempt in range(3):
+              try:
+                  response = client.chat.completions.create(
+                      model="gpt-4o-mini",
+                      messages=[{"role": "user", "content": prompt}],
+                  )
+                  break
+              except Exception as e:
+                  print(f"⚠️ Attempt {attempt+1} failed: {e}")
+                  time.sleep(10)
+          if not response:
+              raise SystemExit("❌ OpenAI API failed after 3 retries")
 
-          summary = response.choices[0].message.content
+          summary = response.choices[0].message.content.strip()
 
           pdf = FPDF()
           pdf.add_page()
-          pdf.set_font("Arial", "B", 16)
-          pdf.cell(200, 10, "Terraform Infrastructure Report", ln=True, align="C")
-          pdf.set_font("Arial", "", 12)
-          pdf.multi_cell(0, 10, summary.encode("latin-1", "replace").decode("latin-1"))
-          pdf.output("terraform-ai-report.pdf")
-          print("✅ Report generated: terraform-ai-report.pdf")
+          pdf.set_font("Helvetica", "B", 16)
+          pdf.cell(200, 10, "Terraform Static Analysis Report", ln=True, align="C")
+          pdf.set_font("Helvetica", "", 12)
+          pdf.multi_cell(0, 10, summary.encode('latin-1', 'replace').decode('latin-1'))
+          pdf.output("terraform-static-report.pdf")
+          print("✅ AI Terraform Report generated successfully.")
           EOF
 
-      - name: Upload AI Report Artifact
+      - name: Upload AI Report
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-ai-report
-          path: terraform/gcp/terraform-ai-report.pdf
+          name: terraform-static-report
+          path: terraform-static-report.pdf
