@@ -1,101 +1,129 @@
-variable "cluster_name" {}
-variable "region" {}
-variable "network" {}
+name: Terraform AI Static Code Analysis (No Cloud)
 
-variable "subnetwork" {
-  description = "Subnetwork self link"
-  type        = string
-}
+on:
+  push:
+    branches: [ main ]
+  pull_request:
 
-variable "env" {
-  type        = string
-  description = "Environment name (e.g., dev, staging, prod)"
-}
+permissions:
+  contents: read
 
-# 👇 GKE cluster without the default node pool
-resource "google_container_cluster" "primary" {
-  name     = var.cluster_name
-  location = var.region
-  networking_mode = "VPC_NATIVE"
+jobs:
+  terraform-ai-static:
+    runs-on: ubuntu-latest
 
-  ip_allocation_policy {
-    cluster_ipv4_cidr_block  = "10.4.0.0/14"
-    services_ipv4_cidr_block = "10.8.0.0/20"
-  }
+    steps:
+      - name: 🧩 Checkout Repository
+        uses: actions/checkout@v4
 
-  network     = var.network
-  subnetwork  = var.subnetwork
-  deletion_protection = false
+      - name: ⚙️ Setup Terraform & Dependencies
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
 
-  # 👇 Don't create a default node pool
-  remove_default_node_pool = true
-  initial_node_count       = 1
+      - name: 🧰 Install Tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y graphviz jq
+          pip install openai fpdf pandas
+          curl -LO https://github.com/hashicorp/terraform-config-inspect/releases/latest/download/terraform-config-inspect_$(uname -s | tr '[:upper:]' '[:lower:]')_amd64.zip
+          unzip terraform-config-inspect_*.zip -d /usr/local/bin/
 
-  node_config {
-    machine_type = "e2-medium"
-    oauth_scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-    disk_type    = "pd-standard"
-    disk_size_gb = 30
-  }
-}
+      - name: 🔍 Terraform Static Validation
+        working-directory: ./terraform/gcp
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform graph | dot -Tpng > terraform-graph.png
+          terraform-config-inspect --json . > tfconfig.json
+          echo "✅ Terraform graph and config extracted"
 
-# 👇 Create a single node pool with 1 node
-resource "google_container_node_pool" "primary_nodes" {
-  name       = "${var.cluster_name}-node-pool"
-  location   = var.region
-  cluster    = google_container_cluster.primary.name
+      - name: 🤖 Generate AI Terraform Summary
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 <<'EOF'
+          import os, json, pandas as pd
+          from openai import OpenAI
+          from fpdf import FPDF
 
-  node_count = 1  # 👈 only one node total
+          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-  node_config {
-    preemptible  = false
-    machine_type = "e2-medium"
-    oauth_scopes = [
-      "https://www.googleapis.com/auth/devstorage.read_only",
-      "https://www.googleapis.com/auth/logging.write",
-      "https://www.googleapis.com/auth/monitoring",
-      "https://www.googleapis.com/auth/service.management.readonly",
-      "https://www.googleapis.com/auth/servicecontrol",
-      "https://www.googleapis.com/auth/trace.append",
-      "https://www.googleapis.com/auth/cloud-platform",
-    ]
-    metadata = {
-      disable-legacy-endpoints = "true"
-    }
-    labels = {
-      env = var.env
-    }
-    tags = ["gke-node"]
-  }
+          # Load static Terraform config JSON
+          with open("terraform/gcp/tfconfig.json") as f:
+              data = json.load(f)
 
-  depends_on = [google_container_cluster.primary]
-}
+          modules = data.get("module_calls", [])
+          variables = data.get("variables", {})
+          outputs = data.get("outputs", {})
+          providers = data.get("provider_requirements", [])
+          resources = data.get("resources", [])
 
-output "endpoint" {
-  value = google_container_cluster.primary.endpoint
-}
+          # --- Build resource summary table ---
+          if resources:
+              df = pd.DataFrame(resources)
+              df = df.rename(columns={"type": "Type", "name": "Name"})
+              summary_table = df.groupby(["Type"]).size().reset_index(name="Count").to_string(index=False)
+          else:
+              summary_table = "No resources defined in Terraform configuration."
 
-output "kubeconfig" {
-  value = <<EOF
-apiVersion: v1
-clusters:
-- cluster:
-    certificate-authority-data: ${google_container_cluster.primary.master_auth[0].cluster_ca_certificate}
-    server: https://${google_container_cluster.primary.endpoint}
-  name: ${var.cluster_name}
-contexts:
-- context:
-    cluster: ${var.cluster_name}
-    user: ${var.cluster_name}
-  name: ${var.cluster_name}
-current-context: ${var.cluster_name}
-kind: Config
-preferences: {}
-users:
-- name: ${var.cluster_name}
-  user:
-    auth-provider:
-      name: gcp
-EOF
-  sensitive = true
-}
+          # --- Prepare AI prompt ---
+          prompt = f"""
+          You are analyzing a Terraform configuration statically (without any cloud interaction).
+
+          Summarize:
+          1. The main infrastructure components (VPC, Kubernetes, SQL, IAM, etc.)
+          2. The relationships or dependencies between resources.
+          3. The intended architecture and purpose.
+          4. Security or scalability notes (e.g., private networking, node pools).
+          5. Suggest improvements or optimizations.
+
+          Configuration metadata:
+          Providers: {providers}
+          Variables: {list(variables.keys())}
+          Outputs: {list(outputs.keys())}
+          Resource Summary:
+          {summary_table}
+          """
+
+          print("🧠 Sending AI analysis request...")
+          response = client.chat.completions.create(
+              model="gpt-4o-mini",
+              messages=[{"role": "user", "content": prompt}]
+          )
+          ai_summary = response.choices[0].message.content.strip()
+
+          # --- Generate PDF ---
+          pdf = FPDF()
+          pdf.add_page()
+          pdf.set_font("Arial", "B", 16)
+          pdf.cell(200, 10, "Terraform Static Infrastructure Report", ln=True, align="C")
+
+          pdf.set_font("Arial", "B", 12)
+          pdf.cell(200, 10, "Resource Summary", ln=True)
+          pdf.set_font("Courier", "", 10)
+          pdf.multi_cell(0, 6, summary_table)
+
+          pdf.set_font("Arial", "B", 12)
+          pdf.cell(200, 10, "AI Architecture Overview", ln=True)
+          pdf.set_font("Arial", "", 11)
+          pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
+
+          pdf.output("terraform-static-report.pdf")
+
+          # --- Markdown Summary ---
+          with open("terraform-ai-summary.md", "w") as f:
+              f.write("# 🧩 Terraform Static Analysis Report\n\n")
+              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
+              f.write("## 🤖 AI Analysis\n\n" + ai_summary)
+
+          print("✅ Terraform AI static report generated successfully.")
+          EOF
+
+      - name: 📦 Upload AI Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-static-report
+          path: |
+            terraform/gcp/terraform-graph.png
+            terraform/gcp/terraform-ai-summary.md
+            terraform-static-report.pdf
