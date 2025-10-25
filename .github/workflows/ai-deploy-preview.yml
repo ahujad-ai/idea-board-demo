@@ -16,6 +16,10 @@ jobs:
       GITHUB_COMMENT: ${{ github.event.comment.body }}
 
     steps:
+      - name: 🧰 Install Dependencies (fast)
+        run: |
+          pip install openai 
+          
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
