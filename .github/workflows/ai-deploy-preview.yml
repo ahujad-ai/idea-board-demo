@@ -20,10 +20,10 @@ jobs:
       GITHUB_COMMENT: ${{ github.event.comment.body }}
 
     steps:
-      - name: 🧰 Install Dependencies (fast)
+      - name: 🧰 Install Dependencies
         run: |
-          pip install openai 
-          
+          pip install openai
+
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
@@ -33,15 +33,22 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python3 <<'EOF'
-          from openai import OpenAI
           import os
+          from openai import OpenAI
+          import re
 
           comment = os.getenv("GITHUB_COMMENT", "/deploy-preview feature-x")
+          dry_run = "dry-run" in comment.lower()
+
           prompt = f"""
-          Interpret this PR comment: "{comment}".
-          Generate safe kubectl commands to deploy the feature environment.
-          The k8s manifests are under ./k8s.
-          Avoid destructive operations like delete.
+          You are an expert DevOps AI assistant.
+          The user comment is: "{comment}"
+
+          Generate ONLY shell commands (no explanations) that safely deploy
+          a Kubernetes preview environment using manifests under ./k8s.
+          Use kubectl apply -f commands only.
+
+          Output MUST be pure bash (no prose, no markdown, no colons, no interpretation).
           """
 
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -49,25 +56,52 @@ jobs:
               model="gpt-5",
               messages=[{"role": "user", "content": prompt}]
           )
+
           cmds = response.choices[0].message.content.strip()
-          print("🧠 Generated Commands:\n", cmds)
+
+          # Clean: remove markdown fences, comments, or interpretation text
+          cmds = re.sub(r'(?i)`+|```+|interpretation.*|^#.*', '', cmds)
+          cmds = re.sub(r'[^a-zA-Z0-9_\-\.\$/ \n=:~"{}]+', '', cmds)
+
+          if dry_run:
+              print("🔍 Dry Run Mode Active - Commands (not executed):\n", cmds)
+          else:
+              print("🧠 Generated Commands:\n", cmds)
+
           with open("commands.sh", "w") as f:
-              f.write(cmds)
+              f.write(cmds + "\n")
+
+          with open("dryrun.txt", "w") as f:
+              if dry_run:
+                  f.write("DRY RUN MODE ENABLED\n" + cmds)
+              else:
+                  f.write("EXECUTION MODE\n" + cmds)
           EOF
 
       - name: 🚀 Execute AI-Generated Commands
+        if: "!contains(github.event.comment.body, 'dry-run')"
         run: |
-          echo "Running AI generated commands:"
+          echo "Running AI-generated commands..."
+          chmod +x commands.sh
           cat commands.sh
-          bash commands.sh
+          bash commands.sh || echo "⚠️ Some commands may have failed. Please check logs."
 
-      - name: 💬 Post Deployment Result
+      - name: 💬 Post AI Output
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |
-            🤖 **AI-assisted preview deployment completed!**
-            Commands executed:
+            🤖 **AI-Assisted Deployment Result**
+            **Comment:** `${{ github.event.comment.body }}`
+            ---
+            **Mode:** ${{ contains(github.event.comment.body, 'dry-run') && 'Dry Run (No Execution)' || 'Execution' }}
+
+            **Generated Commands:**
             ```
             $(cat commands.sh)
+            ```
+
+            **Action Log:**
+            ```
+            $(cat dryrun.txt)
             ```
