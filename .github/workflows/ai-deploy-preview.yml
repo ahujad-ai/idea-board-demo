@@ -59,23 +59,23 @@ jobs:
 
           cmds = response.choices[0].message.content.strip()
 
-          # Clean: remove markdown fences, comments, or interpretation text
+          # Clean: remove markdown or extra text
           cmds = re.sub(r'(?i)`+|```+|interpretation.*|^#.*', '', cmds)
-          cmds = re.sub(r'[^a-zA-Z0-9_\-\.\$/ \n=:~"{}]+', '', cmds)
+          cmds = re.sub(r'[^a-zA-Z0-9_\\-\\.\\$/ \\n=:~"{}]+', '', cmds)
 
           if dry_run:
-              print("🔍 Dry Run Mode Active - Commands (not executed):\n", cmds)
+              print("🔍 Dry Run Mode Active - Commands (not executed):\\n", cmds)
           else:
-              print("🧠 Generated Commands:\n", cmds)
+              print("🧠 Generated Commands:\\n", cmds)
 
           with open("commands.sh", "w") as f:
-              f.write(cmds + "\n")
+              f.write(cmds + "\\n")
 
           with open("dryrun.txt", "w") as f:
               if dry_run:
-                  f.write("DRY RUN MODE ENABLED\n" + cmds)
+                  f.write("DRY RUN MODE ENABLED\\n" + cmds)
               else:
-                  f.write("EXECUTION MODE\n" + cmds)
+                  f.write("EXECUTION MODE\\n" + cmds)
           EOF
 
       - name: 🚀 Execute AI-Generated Commands
@@ -86,8 +86,21 @@ jobs:
           cat commands.sh
           bash commands.sh || echo "⚠️ Some commands may have failed. Please check logs."
 
-            - name: 💬 Post Deployment Result
-        id: post_comment
+      - name: 🧾 Capture Commands Output
+        id: show_cmds
+        run: |
+          echo "commands<<EOF" >> $GITHUB_OUTPUT
+          cat commands.sh >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: 🧾 Capture Logs Output
+        id: show_logs
+        run: |
+          echo "logs<<EOF" >> $GITHUB_OUTPUT
+          cat dryrun.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: 💬 Post Deployment Result
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.issue.number }}
@@ -104,20 +117,4 @@ jobs:
             **Action Log:**
             ```
             ${{ steps.show_logs.outputs.logs }}
-            ```
-
-      - name: 🧾 Capture Outputs
-        id: show_cmds
-        run: |
-          echo "commands<<EOF" >> $GITHUB_OUTPUT
-          cat commands.sh >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: 🧾 Capture Logs
-        id: show_logs
-        run: |
-          echo "logs<<EOF" >> $GITHUB_OUTPUT
-          cat dryrun.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
             ```
