@@ -1,0 +1,65 @@
+name: 🤖 AI-Assisted Preview Deployment
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ai-deploy:
+    if: startsWith(github.event.comment.body, '/deploy-preview')
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_COMMENT: ${{ github.event.comment.body }}
+
+    steps:
+      - name: 📦 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🧠 Generate Deployment Commands with GPT-5
+        id: ai_generate
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 <<'EOF'
+          from openai import OpenAI
+          import os
+
+          comment = os.getenv("GITHUB_COMMENT", "/deploy-preview feature-x")
+          prompt = f"""
+          Interpret this PR comment: "{comment}".
+          Generate safe kubectl commands to deploy the feature environment.
+          The k8s manifests are under ./k8s.
+          Avoid destructive operations like delete.
+          """
+
+          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+          response = client.chat.completions.create(
+              model="gpt-5",
+              messages=[{"role": "user", "content": prompt}]
+          )
+          cmds = response.choices[0].message.content.strip()
+          print("🧠 Generated Commands:\n", cmds)
+          with open("commands.sh", "w") as f:
+              f.write(cmds)
+          EOF
+
+      - name: 🚀 Execute AI-Generated Commands
+        run: |
+          echo "Running AI generated commands:"
+          cat commands.sh
+          bash commands.sh
+
+      - name: 💬 Post Deployment Result
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          body: |
+            🤖 **AI-assisted preview deployment completed!**
+            Commands executed:
+            ```
+            $(cat commands.sh)
+            ```
