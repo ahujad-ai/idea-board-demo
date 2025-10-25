@@ -1,96 +1,148 @@
-name: 🤖 AI-Assisted Preview Deployment
+name: 🤖 Terraform AI Static Code Review (Offline)
 
 on:
-  issue_comment:
-    types: [created]
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: write  # ✅ Required to post PR comments
 
 jobs:
-  ai-deploy:
-    name: AI Deploy (${{ github.event.comment.id }})
+  terraform-ai-review:
     runs-on: ubuntu-latest
-    if: contains(github.event.comment.body, 'deploy-preview')
-    concurrency:
-      group: ai-deploy-${{ github.event.comment.id }}
-    env:
-      GITHUB_COMMENT: ${{ github.event.comment.body }}
 
     steps:
-      - name: 🧰 Install Dependencies
-        run: |
-          pip install openai
-
-      - name: 📦 Checkout repository
+      - name: 🧩 Checkout Repository
         uses: actions/checkout@v4
 
-      - name: 🧠 Generate File from AI
-        id: ai_generate
+      - name: ⚙️ Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.5.7
+
+      - name: 🧰 Install Dependencies (fast)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends graphviz jq
+          pip install openai fpdf pandas
+
+      - name: 🔍 Terraform Static Validation
+        working-directory: ./terraform/gcp
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate || true
+          terraform graph | dot -Tpng > terraform-graph.png
+          echo "📦 Extracting Terraform resources statically..."
+          grep -r "resource \"" . > tfresources.txt || echo "No resources found"
+          grep -r "module \"" . > tfmodules.txt || echo "No modules found"
+          grep -r "variable \"" . > tfvars.txt || echo "No variables found"
+          grep -r "provider \"" . > tfproviders.txt || echo "No providers found"
+          echo "✅ Static Terraform data extracted"
+
+      - name: 🤖 Generate AI Terraform Summary
+        id: ai_summary
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python3 <<'EOF'
-          import os
+          import os, pandas as pd
           from openai import OpenAI
+          from fpdf import FPDF
 
-          comment = os.getenv("GITHUB_COMMENT", "/deploy-preview k8s sample")
           client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-          # Determine file type from comment
-          if "k8s" in comment.lower() or "kubectl" in comment.lower():
-              prompt_type = "yaml"
-              filename = "ai_generated.yaml"
-          elif "shell" in comment.lower() or "sh" in comment.lower():
-              prompt_type = "shell"
-              filename = "ai_generated.sh"
+          def readfile(f):
+              return open(f).read() if os.path.exists(f) else ""
+
+          resources = readfile("terraform/gcp/tfresources.txt")
+          modules = readfile("terraform/gcp/tfmodules.txt")
+          variables = readfile("terraform/gcp/tfvars.txt")
+          providers = readfile("terraform/gcp/tfproviders.txt")
+
+          # Summarize resources
+          res_types = [line.split('"')[1] for line in resources.splitlines() if '"' in line]
+          if res_types:
+              df = pd.DataFrame(res_types, columns=["Type"])
+              summary_table = df.value_counts().reset_index(name="Count").to_string(index=False)
           else:
-              print("⚠️ No valid keyword found in comment — skipping AI generation.")
-              exit(0)
+              summary_table = "No resources detected"
 
           prompt = f"""
-          The user requested a {prompt_type.upper()} file.
-          User comment: "{comment}"
+          You are an AI DevOps reviewer. Analyze this Terraform code statically (no cloud calls).
+          Create a short, insightful review covering:
+          1. Key infrastructure components
+          2. Resource dependencies & architecture overview
+          3. Security & scalability considerations
+          4. Cost or design optimizations
+          5. Overall feedback summary (in 3–4 bullet points)
 
-          Generate ONLY a complete {prompt_type.upper()} file with correct syntax.
-          Do not include any explanations, markdown, or comments — just raw {prompt_type.upper()} content.
+          Variables:
+          {variables[:2000]}
+          Providers:
+          {providers[:2000]}
+          Modules:
+          {modules[:2000]}
+          Resource Summary:
+          {summary_table}
           """
 
+          print("🧠 Requesting AI analysis...")
           response = client.chat.completions.create(
-              model="gpt-5",
-              messages=[{"role": "user", "content": prompt}],
+              model="gpt-4o-mini",
+              messages=[{"role": "user", "content": prompt}]
           )
+          ai_summary = response.choices[0].message.content.strip()
 
-          output = response.choices[0].message.content.strip()
+          # Save Markdown report
+          with open("terraform-ai-summary.md", "w") as f:
+              f.write("# 🤖 Terraform AI Code Review\n\n")
+              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
+              f.write("## 🧠 AI Review\n\n" + ai_summary)
 
-          with open(filename, "w") as f:
-              f.write(output)
+          # Write to GitHub output for PR comment
+          with open(os.environ["GITHUB_OUTPUT"], "a") as ghout:
+              ghout.write(f"summary<<EOF\n{ai_summary}\nEOF\n")
 
-          print(f"✅ Generated {prompt_type.upper()} file saved as {filename}")
+          # PDF export
+          pdf = FPDF()
+          pdf.add_page()
+          pdf.set_font("Arial", "B", 16)
+          pdf.cell(200, 10, "Terraform Static Review", ln=True, align="C")
+
+          pdf.set_font("Arial", "B", 12)
+          pdf.cell(200, 10, "Resource Summary", ln=True)
+          pdf.set_font("Courier", "", 10)
+          pdf.multi_cell(0, 6, summary_table)
+
+          pdf.set_font("Arial", "B", 12)
+          pdf.cell(200, 10, "AI Review Summary", ln=True)
+          pdf.set_font("Arial", "", 11)
+          pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
+
+          pdf.output("terraform-static-review.pdf")
           EOF
 
-      - name: 📎 Upload AI Generated File
-        if: always()
+      - name: 🗨️ Post AI Review Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: "🤖 Terraform AI Code Review"
+          message: |
+            ## 🤖 AI Terraform Review Summary
+
+            ${{ steps.ai_summary.outputs.summary }}
+
+            📄 *Full PDF report and graph are available as build artifacts.*
+
+      - name: 📦 Upload AI Reports
         uses: actions/upload-artifact@v4
         with:
-          name: ai-generated-output
+          name: terraform-ai-review-report
           path: |
-            ai_generated.yaml
-            ai_generated.sh
-          if-no-files-found: ignore
-
-      - name: 💬 Post AI Response on PR
-        uses: marocchino/sticky-pull-request-comment@v2
-        if: github.event_name == 'issue_comment'
-        with:
-          header: "🤖 AI-Assisted Generation Result"
-          message: |
-            ## 🤖 AI-Generated File from Comment
-
-            **Comment:** `${{ github.event.comment.body }}`
-
-            📄 The AI-generated file has been uploaded as a workflow artifact.
-
-            ✅ *No execution or alteration was done on the AI output.*
+            terraform/gcp/terraform-graph.png
+            terraform-ai-summary.md
+            terraform-static-review.pdf
