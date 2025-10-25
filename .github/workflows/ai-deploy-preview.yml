@@ -3,6 +3,7 @@ name: 🤖 AI-Assisted Preview Deployment
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -10,8 +11,11 @@ permissions:
 
 jobs:
   ai-deploy:
-    if: startsWith(github.event.comment.body, '/deploy-preview')
+    name: AI Deploy (${{ github.event.comment.id }})
     runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, 'deploy-preview')
+    concurrency:
+      group: ai-deploy-${{ github.event.comment.id }}
     env:
       GITHUB_COMMENT: ${{ github.event.comment.body }}
 
