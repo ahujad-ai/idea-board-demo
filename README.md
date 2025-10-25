@@ -31,12 +31,12 @@ Frontend  →  Backend  →  PostgreSQL
 ## ⚙️ Local Setup with Docker Compose
 
 ### Prerequisites
-* Docker Desktop or Colima  
+* Docker Desktop
 * `docker compose` plugin
 
 ### Steps
 ```bash
-git clone https://github.com/<your-username>/idea-board-demo.git
+git clone https://github.com/ahujad-ai/idea-board-demo.git
 cd idea-board-demo
 docker compose up --build
 ```
@@ -51,6 +51,45 @@ Access:
 
 The same Terraform modules deploy to either **AWS** or **GCP** by changing a few variables.
 
+### Prerequisites
+* Enable GCP Permissions and Project settings.
+Before you begin, make sure you have:
+
+✅ [Google Cloud SDK installed](https://cloud.google.com/sdk/docs/install)  
+✅ Logged in with your Google account:
+
+```bash
+gcloud auth login
+
+gcloud components install gke-gcloud-auth-plugin
+
+gcloud projects create idea-board-demo \
+  --name="Idea Board Demo" \
+  --set-as-default
+
+gcloud projects list
+
+# Example Output
+#PROJECT_ID         NAME               PROJECT_NUMBER
+#idea-board-demo    Idea Board Demo    483237135245
+
+# Attach Project to billing account
+gcloud billing accounts list
+
+gcloud billing projects link idea-board-demo \
+  --billing-account <billing-account-id>
+
+gcloud services enable \
+  compute.googleapis.com \
+  container.googleapis.com \
+  sqladmin.googleapis.com \
+  artifactregistry.googleapis.com \
+  cloudresourcemanager.googleapis.com
+
+
+gcloud config set project idea-board-demo
+```
+
 ### Configure Terraform
 Edit `terraform.tfvars`:
 ```hcl
@@ -62,9 +101,7 @@ db_password = "your-db-password"
 
 ### Provision Infrastructure
 ```bash
-cd terraform/gcp   # or terraform/aws
-terraform init
-terraform apply
+./deploy.sh gcp
 ```
 Creates VPC, GKE/EKS cluster, CloudSQL/RDS instance, and Artifact/ECR registry.
 
@@ -73,13 +110,10 @@ Creates VPC, GKE/EKS cluster, CloudSQL/RDS instance, and Artifact/ECR registry.
 ./build_and_push_images.sh gcp
 ```
 
-### Deploy to Kubernetes
-```bash
-./deploy.sh gcp
-```
-
 ### Verify
 ```bash
+gcloud container clusters get-credentials idea-board-cluster --region asia-south1
+
 kubectl get pods
 kubectl get svc
 kubectl get ingress
