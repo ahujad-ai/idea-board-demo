@@ -1,148 +1,116 @@
-name: 🤖 Terraform AI Static Code Review (Offline)
+name: 🤖 AI-Assisted Preview Deployment
 
 on:
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ main ]
+  issue_comment:
+    types: [created]
   workflow_dispatch:
 
 permissions:
   contents: read
-  pull-requests: write  # ✅ Required to post PR comments
+  pull-requests: write
 
 jobs:
-  terraform-ai-review:
+  ai-deploy:
+    name: AI Deploy (${{ github.event.comment.id }})
     runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, 'deploy-preview')
+    concurrency:
+      group: ai-deploy-${{ github.event.comment.id }}
+    env:
+      GITHUB_COMMENT: ${{ github.event.comment.body }}
 
     steps:
-      - name: 🧩 Checkout Repository
+      - name: 🧰 Install Dependencies
+        run: |
+          pip install openai
+
+      - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      - name: ⚙️ Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.5.7
-
-      - name: 🧰 Install Dependencies (fast)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends graphviz jq
-          pip install openai fpdf pandas
-
-      - name: 🔍 Terraform Static Validation
-        working-directory: ./terraform/gcp
-        run: |
-          terraform init -backend=false -input=false
-          terraform validate || true
-          terraform graph | dot -Tpng > terraform-graph.png
-          echo "📦 Extracting Terraform resources statically..."
-          grep -r "resource \"" . > tfresources.txt || echo "No resources found"
-          grep -r "module \"" . > tfmodules.txt || echo "No modules found"
-          grep -r "variable \"" . > tfvars.txt || echo "No variables found"
-          grep -r "provider \"" . > tfproviders.txt || echo "No providers found"
-          echo "✅ Static Terraform data extracted"
-
-      - name: 🤖 Generate AI Terraform Summary
-        id: ai_summary
+      - name: 🧠 Generate Deployment Commands with GPT-5
+        id: ai_generate
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           python3 <<'EOF'
-          import os, pandas as pd
+          import os
+          import re
           from openai import OpenAI
-          from fpdf import FPDF
 
-          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-          def readfile(f):
-              return open(f).read() if os.path.exists(f) else ""
-
-          resources = readfile("terraform/gcp/tfresources.txt")
-          modules = readfile("terraform/gcp/tfmodules.txt")
-          variables = readfile("terraform/gcp/tfvars.txt")
-          providers = readfile("terraform/gcp/tfproviders.txt")
-
-          # Summarize resources
-          res_types = [line.split('"')[1] for line in resources.splitlines() if '"' in line]
-          if res_types:
-              df = pd.DataFrame(res_types, columns=["Type"])
-              summary_table = df.value_counts().reset_index(name="Count").to_string(index=False)
-          else:
-              summary_table = "No resources detected"
+          comment = os.getenv("GITHUB_COMMENT", "/deploy-preview feature-x")
+          dry_run = "dry-run" in comment.lower()
 
           prompt = f"""
-          You are an AI DevOps reviewer. Analyze this Terraform code statically (no cloud calls).
-          Create a short, insightful review covering:
-          1. Key infrastructure components
-          2. Resource dependencies & architecture overview
-          3. Security & scalability considerations
-          4. Cost or design optimizations
-          5. Overall feedback summary (in 3–4 bullet points)
+          You are a DevOps AI assistant.
+          The user comment is: "{comment}"
 
-          Variables:
-          {variables[:2000]}
-          Providers:
-          {providers[:2000]}
-          Modules:
-          {modules[:2000]}
-          Resource Summary:
-          {summary_table}
+          Generate ONLY shell commands (no explanations) that safely deploy
+          a Kubernetes preview environment using manifests under ./k8s.
+          Use kubectl apply -f or kubectl create commands only.
+
+          Output MUST be plain bash commands (no markdown, no interpretation, no text).
           """
 
-          print("🧠 Requesting AI analysis...")
+          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
           response = client.chat.completions.create(
-              model="gpt-4o-mini",
+              model="gpt-5",
               messages=[{"role": "user", "content": prompt}]
           )
-          ai_summary = response.choices[0].message.content.strip()
 
-          # Save Markdown report
-          with open("terraform-ai-summary.md", "w") as f:
-              f.write("# 🤖 Terraform AI Code Review\n\n")
-              f.write("## 📊 Resource Summary\n```\n" + summary_table + "\n```\n\n")
-              f.write("## 🧠 AI Review\n\n" + ai_summary)
+          cmds = response.choices[0].message.content.strip()
+          cmds = re.sub(r'(?i)`+|```+|interpretation.*|^#.*', '', cmds)
+          cmds = re.sub(r'[^a-zA-Z0-9_\\-\\.\\$/ \\n=:~"{}]+', '', cmds)
 
-          # Write to GitHub output for PR comment
-          with open(os.environ["GITHUB_OUTPUT"], "a") as ghout:
-              ghout.write(f"summary<<EOF\n{ai_summary}\nEOF\n")
+          with open("commands.sh", "w") as f:
+              f.write(cmds + "\\n")
 
-          # PDF export
-          pdf = FPDF()
-          pdf.add_page()
-          pdf.set_font("Arial", "B", 16)
-          pdf.cell(200, 10, "Terraform Static Review", ln=True, align="C")
-
-          pdf.set_font("Arial", "B", 12)
-          pdf.cell(200, 10, "Resource Summary", ln=True)
-          pdf.set_font("Courier", "", 10)
-          pdf.multi_cell(0, 6, summary_table)
-
-          pdf.set_font("Arial", "B", 12)
-          pdf.cell(200, 10, "AI Review Summary", ln=True)
-          pdf.set_font("Arial", "", 11)
-          pdf.multi_cell(0, 8, ai_summary.encode("latin-1", "replace").decode("latin-1"))
-
-          pdf.output("terraform-static-review.pdf")
+          with open("dryrun.txt", "w") as f:
+              f.write(("DRY RUN MODE\\n" if dry_run else "EXECUTION MODE\\n") + cmds)
           EOF
 
-      - name: 🗨️ Post AI Review Comment on PR
-        if: github.event_name == 'pull_request'
+      - name: 🚀 Execute AI-Generated Commands
+        if: "!contains(github.event.comment.body, 'dry-run')"
+        run: |
+          echo "Running AI-generated commands..."
+          chmod +x commands.sh
+          cat commands.sh
+          bash commands.sh || echo "⚠️ Some commands may have failed. Please check logs."
+
+      - name: 🧾 Capture Commands Output
+        id: show_cmds
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          echo "commands<<$delimiter" >> $GITHUB_OUTPUT
+          cat commands.sh >> $GITHUB_OUTPUT
+          echo "$delimiter" >> $GITHUB_OUTPUT
+
+      - name: 🧾 Capture Logs Output
+        id: show_logs
+        run: |
+          delimiter="$(openssl rand -hex 8)"
+          echo "logs<<$delimiter" >> $GITHUB_OUTPUT
+          cat dryrun.txt >> $GITHUB_OUTPUT
+          echo "$delimiter" >> $GITHUB_OUTPUT
+
+      - name: 🗨️ Post AI Deployment Summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
+        if: github.event_name == 'issue_comment'
         with:
-          header: "🤖 Terraform AI Code Review"
+          header: "🤖 AI-Assisted Deploy Preview"
           message: |
-            ## 🤖 AI Terraform Review Summary
+            ## 🤖 AI-Assisted Deployment Summary
 
-            ${{ steps.ai_summary.outputs.summary }}
+            **Comment:** `${{ github.event.comment.body }}`  
+            **Mode:** ${{ contains(github.event.comment.body, 'dry-run') && '🧪 Dry Run' || '🚀 Execution' }}
 
-            📄 *Full PDF report and graph are available as build artifacts.*
+            **Generated Commands:**
+            ```bash
+            ${{ steps.show_cmds.outputs.commands }}
+            ```
 
-      - name: 📦 Upload AI Reports
-        uses: actions/upload-artifact@v4
-        with:
-          name: terraform-ai-review-report
-          path: |
-            terraform/gcp/terraform-graph.png
-            terraform-ai-summary.md
-            terraform-static-review.pdf
+            **AI Action Log:**
+            ```
+            ${{ steps.show_logs.outputs.logs }}
+            ```
+
+            📎 *AI-generated commands were executed (or simulated if dry-run).*
