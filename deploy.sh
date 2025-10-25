@@ -44,8 +44,8 @@ echo "✅ Kubernetes credentials configured."
 echo "📦 Deploying Kubernetes manifests..."
 
 # Apply backend and frontend manifests
-kubectl apply -f k8s/gcp/backend.yml
-kubectl apply -f k8s/gcp/frontend.yml
+kubectl apply -f ./k8s/gcp/backend.yml
+kubectl apply -f ./k8s/gcp/frontend.yml
 
 echo "🎉 Deployment complete!"
 kubectl get svc
