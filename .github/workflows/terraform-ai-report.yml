@@ -80,23 +80,22 @@ jobs:
         id: show_cmds
         shell: bash
         run: |
-          delimiter=$(uuidgen)
           {
-            echo "commands<<${delimiter}"
-            cat commands.sh || echo "⚠️ commands.sh not found"
-            echo "${delimiter}"
+            echo 'commands<<EOF'
+            cat commands.sh 2>/dev/null || echo "⚠️ commands.sh not found"
+            echo 'EOF'
           } >> "$GITHUB_OUTPUT"
 
       - name: 🧾 Capture Logs Output
         id: show_logs
         shell: bash
         run: |
-          delimiter=$(uuidgen)
           {
-            echo "logs<<${delimiter}"
-            cat dryrun.txt || echo "⚠️ dryrun.txt not found"
-            echo "${delimiter}"
+            echo 'logs<<EOF'
+            cat dryrun.txt 2>/dev/null || echo "⚠️ dryrun.txt not found"
+            echo 'EOF'
           } >> "$GITHUB_OUTPUT"
+
 
       - name: 🗨️ Post AI Deployment Summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
