@@ -86,22 +86,38 @@ jobs:
           cat commands.sh
           bash commands.sh || echo "⚠️ Some commands may have failed. Please check logs."
 
-      - name: 💬 Post AI Output
+            - name: 💬 Post Deployment Result
+        id: post_comment
         uses: peter-evans/create-or-update-comment@v4
         with:
           issue-number: ${{ github.event.issue.number }}
           body: |
             🤖 **AI-Assisted Deployment Result**
             **Comment:** `${{ github.event.comment.body }}`
-            ---
             **Mode:** ${{ contains(github.event.comment.body, 'dry-run') && 'Dry Run (No Execution)' || 'Execution' }}
 
             **Generated Commands:**
-            ```
-            $(cat commands.sh)
+            ```bash
+            ${{ steps.show_cmds.outputs.commands }}
             ```
 
             **Action Log:**
             ```
-            $(cat dryrun.txt)
+            ${{ steps.show_logs.outputs.logs }}
+            ```
+
+      - name: 🧾 Capture Outputs
+        id: show_cmds
+        run: |
+          echo "commands<<EOF" >> $GITHUB_OUTPUT
+          cat commands.sh >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: 🧾 Capture Logs
+        id: show_logs
+        run: |
+          echo "logs<<EOF" >> $GITHUB_OUTPUT
+          cat dryrun.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
             ```
