@@ -27,7 +27,7 @@ jobs:
       - name: 📦 Checkout repository
         uses: actions/checkout@v4
 
-      - name: 🧠 Generate Deployment Commands with GPT-5
+      - name: 🧠 Generate File from AI
         id: ai_generate
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -35,86 +35,62 @@ jobs:
           python3 <<'EOF'
           import os
           from openai import OpenAI
-          import re
 
-          comment = os.getenv("GITHUB_COMMENT", "/deploy-preview feature-x")
-          dry_run = "dry-run" in comment.lower()
+          comment = os.getenv("GITHUB_COMMENT", "/deploy-preview k8s sample")
+          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+          # Determine file type from comment
+          if "k8s" in comment.lower() or "kubectl" in comment.lower():
+              prompt_type = "yaml"
+              filename = "ai_generated.yaml"
+          elif "shell" in comment.lower() or "sh" in comment.lower():
+              prompt_type = "shell"
+              filename = "ai_generated.sh"
+          else:
+              print("⚠️ No valid keyword found in comment — skipping AI generation.")
+              exit(0)
 
           prompt = f"""
-          You are an expert DevOps AI assistant.
-          The user comment is: "{comment}"
+          The user requested a {prompt_type.upper()} file.
+          User comment: "{comment}"
 
-          Generate ONLY shell commands (no explanations) that safely deploy
-          a Kubernetes preview environment using manifests under ./k8s.
-          Use kubectl apply -f commands only.
-
-          Output MUST be pure bash (no prose, no markdown, no colons, no interpretation).
+          Generate ONLY a complete {prompt_type.upper()} file with correct syntax.
+          Do not include any explanations, markdown, or comments — just raw {prompt_type.upper()} content.
           """
 
-          client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
           response = client.chat.completions.create(
               model="gpt-5",
-              messages=[{"role": "user", "content": prompt}]
+              messages=[{"role": "user", "content": prompt}],
           )
 
-          cmds = response.choices[0].message.content.strip()
+          output = response.choices[0].message.content.strip()
 
-          # Clean: remove markdown or extra text
-          cmds = re.sub(r'(?i)`+|```+|interpretation.*|^#.*', '', cmds)
-          cmds = re.sub(r'[^a-zA-Z0-9_\\-\\.\\$/ \\n=:~"{}]+', '', cmds)
+          with open(filename, "w") as f:
+              f.write(output)
 
-          if dry_run:
-              print("🔍 Dry Run Mode Active - Commands (not executed):\\n", cmds)
-          else:
-              print("🧠 Generated Commands:\\n", cmds)
-
-          with open("commands.sh", "w") as f:
-              f.write(cmds + "\\n")
-
-          with open("dryrun.txt", "w") as f:
-              if dry_run:
-                  f.write("DRY RUN MODE ENABLED\\n" + cmds)
-              else:
-                  f.write("EXECUTION MODE\\n" + cmds)
+          print(f"✅ Generated {prompt_type.upper()} file saved as {filename}")
           EOF
 
-      - name: 🚀 Execute AI-Generated Commands
-        if: "!contains(github.event.comment.body, 'dry-run')"
-        run: |
-          echo "Running AI-generated commands..."
-          chmod +x commands.sh
-          cat commands.sh
-          bash commands.sh || echo "⚠️ Some commands may have failed. Please check logs."
-
-      - name: 🧾 Capture Commands Output
-        id: show_cmds
-        run: |
-          echo "commands<<EOF" >> $GITHUB_OUTPUT
-          cat commands.sh >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: 🧾 Capture Logs Output
-        id: show_logs
-        run: |
-          echo "logs<<EOF" >> $GITHUB_OUTPUT
-          cat dryrun.txt >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: 💬 Post Deployment Result
-        uses: peter-evans/create-or-update-comment@v4
+      - name: 📎 Upload AI Generated File
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          issue-number: ${{ github.event.issue.number }}
-          body: |
-            🤖 **AI-Assisted Deployment Result**
+          name: ai-generated-output
+          path: |
+            ai_generated.yaml
+            ai_generated.sh
+          if-no-files-found: ignore
+
+      - name: 💬 Post AI Response on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        if: github.event_name == 'issue_comment'
+        with:
+          header: "🤖 AI-Assisted Generation Result"
+          message: |
+            ## 🤖 AI-Generated File from Comment
+
             **Comment:** `${{ github.event.comment.body }}`
-            **Mode:** ${{ contains(github.event.comment.body, 'dry-run') && 'Dry Run (No Execution)' || 'Execution' }}
 
-            **Generated Commands:**
-            ```bash
-            ${{ steps.show_cmds.outputs.commands }}
-            ```
+            📄 The AI-generated file has been uploaded as a workflow artifact.
 
-            **Action Log:**
-            ```
-            ${{ steps.show_logs.outputs.logs }}
-            ```
+            ✅ *No execution or alteration was done on the AI output.*
