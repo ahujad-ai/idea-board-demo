@@ -13,7 +13,7 @@ An intelligent, automated, multi-cloud DevOps platform integrating AI-assisted a
 | **Database** | PostgreSQL | Persistent data layer |
 | **IaC** | Terraform | Cloud-agnostic modular infrastructure |
 | **Orchestration** | Kubernetes (GKE/EKS) | Deployment and scaling of containers |
-| **AI Layer** | OpenAI via GitHub Actions | Automatic Terraform analysis and documentation |
+| **AI Layer** | OpenAI via GitHub Actions | Automatic Terraform analysis and AI-driven deployment workflows |
 | **Containerization** | Docker | Consistent build and runtime environments |
 
 ```
@@ -60,33 +60,10 @@ Before you begin, make sure you have:
 
 ```bash
 gcloud auth login
-
 gcloud components install gke-gcloud-auth-plugin
-
-gcloud projects create idea-board-demo \
-  --name="Idea Board Demo" \
-  --set-as-default
-
-gcloud projects list
-
-# Example Output
-#PROJECT_ID         NAME               PROJECT_NUMBER
-#idea-board-demo    Idea Board Demo    483237135245
-
-# Attach Project to billing account
-gcloud billing accounts list
-
-gcloud billing projects link idea-board-demo \
-  --billing-account <billing-account-id>
-
-gcloud services enable \
-  compute.googleapis.com \
-  container.googleapis.com \
-  sqladmin.googleapis.com \
-  artifactregistry.googleapis.com \
-  cloudresourcemanager.googleapis.com
-
-
+gcloud projects create idea-board-demo --name="Idea Board Demo" --set-as-default
+gcloud billing projects link idea-board-demo --billing-account <billing-account-id>
+gcloud services enable compute.googleapis.com container.googleapis.com sqladmin.googleapis.com artifactregistry.googleapis.com cloudresourcemanager.googleapis.com
 gcloud config set project idea-board-demo
 ```
 
@@ -103,6 +80,7 @@ db_password = "your-db-password"
 ```bash
 ./deploy.sh gcp
 ```
+
 Creates VPC, GKE/EKS cluster, CloudSQL/RDS instance, and Artifact/ECR registry.
 
 ### Build and Push Images
@@ -113,7 +91,6 @@ Creates VPC, GKE/EKS cluster, CloudSQL/RDS instance, and Artifact/ECR registry.
 ### Verify
 ```bash
 gcloud container clusters get-credentials idea-board-cluster --region asia-south1
-
 kubectl get pods
 kubectl get svc
 kubectl get ingress
@@ -121,27 +98,59 @@ kubectl get ingress
 
 ---
 
-## 🤖 AI-Powered CI/CD Pipeline
+## 🤖 AI-Powered CI/CD Workflows
 
-A GitHub Actions workflow uses an **LLM** to analyze Terraform during pull requests.
+### 1️⃣ Terraform AI Review
+
+File: `.github/workflows/terraform-ai-review.yml`
+
+**Purpose:** Automatically analyzes Terraform configurations using GPT-5 to create architecture summaries, risk assessments, and reports.
 
 **Features**
-* Validates Terraform syntax offline  
-* Builds a dependency graph (`terraform graph`)  
-* Generates summaries, cost drivers, and risks  
-* Produces PDF & Markdown reports  
-* Posts AI summary as a PR comment  
+* Offline Terraform analysis (`terraform graph`)
+* AI-generated documentation (PDF & Markdown)
+* PR comment summary and insights
 
-Workflow file: `.github/workflows/terraform-ai-review.yml`
-
-### Required Secret
+Required Secret:
 ```
 OPENAI_API_KEY = <your-openai-api-key>
 ```
 
-**Example PR Output**
-> • Creates a GKE cluster, VPC-native network, and PostgreSQL CloudSQL instance.  
-> • Recommends private networking and autoscaling for non-prod clusters.
+---
+
+### 2️⃣ AI-Assisted Deployment Preview
+
+File: `.github/workflows/ai-deploy-preview.yml`
+
+**Purpose:** Automatically interprets PR comments like `/deploy-preview` and generates safe, AI-driven Kubernetes deployment commands.
+
+#### Supported Commands
+
+| Comment | Description |
+|:--------|:-------------|
+| `/deploy-preview` | Deploys a preview environment using generated kubectl commands |
+| `/deploy-preview dry-run` | Posts AI-generated commands as a comment (no execution) |
+
+#### How It Works
+1. Developer comments `/deploy-preview` on a PR.  
+2. Workflow triggers the AI model (GPT-5).  
+3. GPT-5 generates **safe, executable `kubectl apply` commands**.  
+4. Workflow sanitizes the commands and executes or dry-runs them.  
+5. The bot posts a **deployment summary** as a PR comment.
+
+#### Example PR Comment (Dry Run)
+```
+🤖 AI-Assisted Deployment Result
+Mode: Dry Run (No Execution)
+Generated Commands:
+kubectl apply -f ./k8s/frontend.yml
+kubectl apply -f ./k8s/backend.yml
+```
+
+#### AI Safety Rules
+* Executes only `kubectl apply` (no deletions or shell-side effects).
+* Sanitizes LLM output before execution.
+* Ensures all commands reference known manifests under `./k8s/`.
 
 ---
 
@@ -168,34 +177,12 @@ modules/
 
 ---
 
-## 🧰 GitHub Actions Pipeline Flow
+## 🧠 Combined AI Pipelines Summary
 
-| Step | Description |
-|:----:|:-------------|
-| 1 | Validate Terraform (offline) |
-| 2 | Generate graph of resources |
-| 3 | Call OpenAI for summary |
-| 4 | Create and upload PDF report |
-| 5 | Comment results on PR |
-
----
-
-## 📊 Example AI Report
-
-```
-Resource Type                  Count
-google_container_cluster        1
-google_container_node_pool      1
-google_sql_database_instance    1
-aws_vpc                         1
-aws_eks_cluster                 1
-aws_db_instance                 1
-```
-
-**AI Summary**
-> Terraform provisions a single-node GKE/EKS cluster and CloudSQL/RDS instance with private VPC networking.  
-> Infrastructure follows modular, cost-efficient patterns.  
-> Recommendations: enable private IP for databases and autoscaling for production.
+| Pipeline | Purpose | AI Role |
+|:----------|:---------|:--------|
+| `terraform-ai-review.yml` | Analyze Terraform infra | Generate architecture summary, risks, PDF reports |
+| `ai-deploy-preview.yml` | Deploy preview via PR comment | Generate & execute Kubernetes deployment safely |
 
 ---
 
@@ -215,18 +202,16 @@ idea-board-demo/
 ---
 
 ## 🔮 Future Enhancements
-* 🤖 Natural-language `/deploy-preview` commands in PRs  
-* 🧩 AI-driven autoscaling policy suggestions  
-* ☁️ Add Azure (AKS) and AWS support  
-* 📈 Automatic cost forecast and impact analysis  
+* 🤖 Extend `/deploy-preview` to support `/rollback-preview`
+* 🧩 AI-driven autoscaling & resource recommendations
+* ☁️ Add Azure (AKS) and AWS EKS support
+* 📈 Predictive cost and anomaly detection
 
 ---
 
 ## 🪪 Credits
-
 Created for the  
 **“AI-First Cloud-Agnostic DevOps Platform” Case Study Challenge**
-
 
 ---
 
