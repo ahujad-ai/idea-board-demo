@@ -78,19 +78,25 @@ jobs:
 
       - name: 🧾 Capture Commands Output
         id: show_cmds
+        shell: bash
         run: |
-          delimiter="$(openssl rand -hex 8)"
-          echo "commands<<$delimiter" >> $GITHUB_OUTPUT
-          cat commands.sh >> $GITHUB_OUTPUT
-          echo "$delimiter" >> $GITHUB_OUTPUT
+          delimiter=$(uuidgen)
+          {
+            echo "commands<<${delimiter}"
+            cat commands.sh || echo "⚠️ commands.sh not found"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 🧾 Capture Logs Output
         id: show_logs
+        shell: bash
         run: |
-          delimiter="$(openssl rand -hex 8)"
-          echo "logs<<$delimiter" >> $GITHUB_OUTPUT
-          cat dryrun.txt >> $GITHUB_OUTPUT
-          echo "$delimiter" >> $GITHUB_OUTPUT
+          delimiter=$(uuidgen)
+          {
+            echo "logs<<${delimiter}"
+            cat dryrun.txt || echo "⚠️ dryrun.txt not found"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: 🗨️ Post AI Deployment Summary on PR
         uses: marocchino/sticky-pull-request-comment@v2
